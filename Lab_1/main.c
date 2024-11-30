@@ -1,13 +1,11 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <sys/time.h>
 
 // Глобальные переменные для синхронизации
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond1 = PTHREAD_COND_INITIALIZER;
 int ready = 0; // Флаг состояния события
-struct timeval event_time; // Время отправки события
 
 // Поток-поставщик
 void *producer(void *arg) {
@@ -21,9 +19,8 @@ void *producer(void *arg) {
             continue;
         }
 
-        // Устанавливаем флаг события и фиксируем время
+        // Устанавливаем флаг события
         ready = 1;
-        gettimeofday(&event_time, NULL); // Запоминаем текущее время
         printf("Поставщик: событие отправлено\n");
 
         // Сигнализируем потоку-потребителю
@@ -49,15 +46,9 @@ void *consumer(void *arg) {
             printf("Потребитель: пробуждение\n");
         }
 
-        // Вычисляем задержку
-        struct timeval current_time;
-        gettimeofday(&current_time, NULL); // Текущее время
-        long delay_microseconds = (current_time.tv_sec - event_time.tv_sec) * 1000000L + (current_time.tv_usec - event_time.tv_usec);
-        double delay_seconds = delay_microseconds / 1000000.0; // Перевод в секунды
-
         // Сбрасываем флаг события и выводим сообщение
         ready = 0;
-        printf("Потребитель: событие обработано (задержка %.6f секунд)\n", delay_seconds);
+        printf("Потребитель: событие обработано\n");
 
         // Освобождаем мьютекс
         pthread_mutex_unlock(&lock);
