@@ -1,73 +1,150 @@
+#include <unistd.h>
+#include <errno.h>
+#include <signal.h>
 #include <sys/socket.h>
-#include <sys/select.h>
+#include <stdlib.h>
 #include <arpa/inet.h>
 #include <stdio.h>
-#include <signal.h>
+#include <string.h>
 
-//Максимальное количество пользователей
-const int MAXC_CLIENT = 1;
-// Переменная-флаг, которая отслеживает обаботку сигнала
-volatile sig_atomic_t wasSigHup = 0;
+// Максимальное количество клиентов
+const int CLIENT_LIMIT = 2;
 
-// Функция-обработчик сигнала SIGHUP
-void sigHupHandler(int r)
-{
-    wasSigHup = 1;
+// Переменная для отслеживания сигнала
+volatile sig_atomic_t signalFlag = 0;
+
+// Структура для хранения информации о клиенте
+typedef struct {
+    int clientSocket;             // Дескриптор сокета клиента
+    struct sockaddr_in clientAddr; // Адрес клиента
+} Client;
+
+// Обработчик сигнала SIGHUP
+void handleSigHup(int signal) {
+    signalFlag = 1;
 }
 
-// Структура для хранения информации о клинете
-
-typedef struct Client
-{
-    int socket_fd; // 
-    struct sockaddr_in address;  // Адрес клиента
-};
-
-// Создание TCP-сервера 
-int createServerSocket(int port)
-{
-    struct sockaddr_in server_address; // Адрес сервера
-    memset(&server_address, 0, sizeof(server_address)); // Обнуление памяти
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0); // Создание сокета
-
-    if (serverSocket == -1)
-    {
-        puts("Ошибка создания сокета\n");
-        exit(-1);
-    }
-
-    //Определение сервера
-    server_address.sin_family = AF_INET; //IP4
-    server_address.sin_port = htons(port);
-    server_address.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    if (bind(serverSocket, (struct sockaddr*) &server_address, sizeof(server_address)) != 0)
-    {
-        puts("Ошибка привязки сокета\n");
-        close(serverSocket);
-        exit(-1);
-    }
-
-    if (listen(serverSocket, MAXC_CLIENT) != 0)
-    {
-        puts("Ошибка при прослушивании сокета\n");
-        close(serverSocket);
-        exit(-1);
-    }
-    return serverSocket;
-}
-
-
-void setupSignalHandler()
-{
+// Настройка обработчика сигнала
+void configureSignalHandler(sigset_t *prevMask) {
     struct sigaction sa;
     sigaction(SIGHUP, NULL, &sa);
-    sa.sa_handler = sigHupHandler;
-    sa.sa_flags |= SA_RESTART;
+    sa.sa_handler = handleSigHup; // Указываем обработчик
+    sa.sa_flags |= SA_RESTART;    // Перезапуск системных вызовов
     sigaction(SIGHUP, &sa, NULL);
 
+    // Блокировка сигнала SIGHUP
     sigset_t blockedMask;
     sigemptyset(&blockedMask);
     sigaddset(&blockedMask, SIGHUP);
-    sigprocmask(SIG_BLOCK, &blockedMask, &origMask);
+    sigprocmask(SIG_BLOCK, &blockedMask, prevMask);
+}
+
+// Функция для создания TCP-сервера
+int initializeServer(int port) {
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    
+    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket < 0) {
+        perror("Ошибка создания сокета");
+        exit(EXIT_FAILURE);
+    }
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serverAddr.sin_port = htons(port);
+
+    if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) != 0) {
+        perror("Ошибка привязки сокета");
+        close(serverSocket);
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(serverSocket, CLIENT_LIMIT) != 0) {
+        perror("Ошибка при прослушивании сокета");
+        close(serverSocket);
+        exit(EXIT_FAILURE);
+    }
+
+    return serverSocket;
+}
+
+// Основная логика обработки подключений
+int handleServerConnections(int serverSocket, sigset_t prevSignalMask) {
+    Client clients[CLIENT_LIMIT];
+    int clientCount = 0;
+    char messageBuffer[1024] = {0};
+
+    while (1) {
+        // Обработка сигнала SIGHUP
+        if (signalFlag) {
+            signalFlag = 0;
+        }
+
+        // Подготовка дескрипторов для select
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(serverSocket, &readfds);
+        int maxFd = serverSocket;
+
+        // Добавляем дескрипторы клиентов в набор
+        for (int i = 0; i < clientCount; i++) {
+            FD_SET(clients[i].clientSocket, &readfds);
+            if (clients[i].clientSocket > maxFd) {
+                maxFd = clients[i].clientSocket;
+            }
+        }
+
+        // Ожидание событий с использованием pselect
+        if (pselect(maxFd + 1, &readfds, NULL, NULL, NULL, &prevSignalMask) == -1) {
+            if (errno == EINTR) continue;  // Игнорируем прерывания от сигналов
+            return -1;
+        }
+
+        // Обработка нового подключения клиента
+        if (FD_ISSET(serverSocket, &readfds) && clientCount < CLIENT_LIMIT) {
+            Client *newClient = &clients[clientCount];
+            int addrLen = sizeof(newClient->clientAddr);
+            int newSocket = accept(serverSocket, (struct sockaddr*)&newClient->clientAddr, &addrLen);
+            if (newSocket >= 0) {
+                newClient->clientSocket = newSocket;
+                clientCount++;
+            } else {
+                perror("Ошибка accept");
+            }
+        }
+
+        // Чтение данных от клиентов
+        for (int i = 0; i < clientCount; i++) {
+            Client *client = &clients[i];
+            if (FD_ISSET(client->clientSocket, &readfds)) {
+                int bytesRead = read(client->clientSocket, messageBuffer, sizeof(messageBuffer) - 1);
+                if (bytesRead > 0) {
+                    messageBuffer[bytesRead] = '\0'; // Завершаем строку
+                    printf("%s\n", messageBuffer);
+                } else {
+                    close(client->clientSocket);
+                    puts("Соединение закрыто.");
+                    clients[i] = clients[clientCount - 1];
+                    clientCount--;
+                    i--;
+                }
+            }
+        }
+    }
+}
+
+int main() {
+    int serverSocket = initializeServer(2525);
+    puts("Сервер запущен, ожидание подключений...");
+
+    sigset_t prevSignalMask;
+    configureSignalHandler(&prevSignalMask);
+
+    int result = handleServerConnections(serverSocket, prevSignalMask);
+    if (result == -1) {
+        perror("Ошибка работы с pselect");
+    }
+
+    return 0;
 }
