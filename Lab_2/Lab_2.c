@@ -29,7 +29,7 @@ void configureSignalHandler(sigset_t *prevMask) {
     struct sigaction sa;
     sigaction(SIGHUP, NULL, &sa);
     sa.sa_handler = handleSigHup; // Указываем обработчик
-    sa.sa_flags |= SA_RESTART;    // Перезапуск системных вызовов
+    sa.sa_flags |= SA_RESTART; 
     sigaction(SIGHUP, &sa, NULL);
 
     // Блокировка сигнала SIGHUP
