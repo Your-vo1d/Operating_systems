@@ -78,6 +78,11 @@ int handleServerConnections(int serverSocket, sigset_t prevSignalMask) {
     while (1) {
         // Обработка сигнала SIGHUP
         if (signalFlag) {
+            puts("Clients: ");
+            for (int i = 0; i < clientCount; i++) {
+                puts(" ");
+            }
+            puts("\n");
             signalFlag = 0;
         }
 
@@ -135,7 +140,7 @@ int handleServerConnections(int serverSocket, sigset_t prevSignalMask) {
 }
 
 int main() {
-    int serverSocket = initializeServer(2525);
+    int serverSocket = initializeServer(2523);
     puts("Сервер запущен, ожидание подключений...");
 
     sigset_t prevSignalMask;
